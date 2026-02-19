@@ -1,0 +1,20 @@
+# Database — local only; Railway uses a volume or Postgres
+inventory.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.env
+
+# macOS
+.DS_Store
+
+# Streamlit cache
+.streamlit/

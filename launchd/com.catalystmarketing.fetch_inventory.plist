@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalystmarketing.fetch_inventory</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Update these paths to match your environment -->
+    <string>/usr/local/bin/python3</string>
+    <string>/Users/sb/Documents/dealer_analytics/fetch_inventory.py</string>
+  </array>
+
+  <!-- Run daily at 08:00 local time -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!-- Log stdout/stderr -->
+  <key>StandardOutPath</key>
+  <string>/Users/sb/Documents/dealer_analytics/fetch_inventory.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/sb/Documents/dealer_analytics/fetch_inventory_error.log</string>
+
+  <!-- Working directory (so DB path resolves correctly) -->
+  <key>WorkingDirectory</key>
+  <string>/Users/sb/Documents/dealer_analytics</string>
+
+  <!-- FTP credentials via environment (set in your shell profile or here) -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FTP_USER</key>
+    <string>your_ftp_username</string>
+    <key>FTP_PASS</key>
+    <string>your_ftp_password</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
