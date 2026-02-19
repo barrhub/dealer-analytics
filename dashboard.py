@@ -10,6 +10,7 @@ Requires:
 
 import os
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -17,6 +18,13 @@ import plotly.graph_objects as go
 import psycopg2
 import requests
 import streamlit as st
+
+# Load .env file if present (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Page config

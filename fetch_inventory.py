@@ -23,6 +23,13 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
+# Load .env file if present (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
