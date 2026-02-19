@@ -50,12 +50,49 @@ def get_db_url() -> str:
     return url
 
 
+@st.cache_resource
+def ensure_tables():
+    """Create tables if they don't exist. Runs once per app session."""
+    conn = psycopg2.connect(get_db_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS snapshots (
+                    date      TEXT,
+                    dealer    TEXT,
+                    vin       TEXT,
+                    year      INTEGER,
+                    make      TEXT,
+                    model     TEXT,
+                    trim      TEXT,
+                    condition TEXT,
+                    price     REAL,
+                    PRIMARY KEY (date, vin, dealer)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fetch_log (
+                    fetched_at  TEXT,
+                    dealer      TEXT,
+                    file        TEXT,
+                    rows_parsed INTEGER,
+                    status      TEXT
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def query(sql: str, params=()) -> pd.DataFrame:
     conn = psycopg2.connect(get_db_url())
     try:
         return pd.read_sql_query(sql, conn, params=list(params) if params else None)
     finally:
         conn.close()
+
+
+ensure_tables()
 
 
 @st.cache_data(ttl=300)
