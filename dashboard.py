@@ -2,19 +2,21 @@
 dashboard.py — Streamlit dealer inventory analytics dashboard.
 
 Run:  streamlit run dashboard.py
+
+Requires:
+    DATABASE_URL environment variable pointing to a PostgreSQL instance.
+    e.g. export DATABASE_URL=postgresql://localhost/dealer_analytics
 """
 
-import sqlite3
+import os
 from datetime import date, timedelta
-from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import psycopg2
 import requests
 import streamlit as st
-
-DB_PATH = Path(__file__).parent / "inventory.db"
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -30,19 +32,22 @@ st.set_page_config(
 # Database helpers
 # ---------------------------------------------------------------------------
 
-@st.cache_resource
-def get_conn():
-    if not DB_PATH.exists():
-        st.error(f"Database not found: {DB_PATH}. Run `python fetch_inventory.py` first.")
+def get_db_url() -> str:
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if not url:
+        st.error("DATABASE_URL environment variable not set.")
         st.stop()
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return url
 
 
 def query(sql: str, params=()) -> pd.DataFrame:
-    conn = get_conn()
-    return pd.read_sql_query(sql, conn, params=params)
+    conn = psycopg2.connect(get_db_url())
+    try:
+        return pd.read_sql_query(sql, conn, params=list(params) if params else None)
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=300)
@@ -65,7 +70,7 @@ def get_date_range() -> tuple[date, date]:
 
 @st.cache_data(ttl=300)
 def get_makes_models(dealers: tuple) -> pd.DataFrame:
-    placeholders = ",".join("?" * len(dealers))
+    placeholders = ",".join(["%s"] * len(dealers))
     return query(
         f"SELECT DISTINCT make, model FROM snapshots WHERE dealer IN ({placeholders}) ORDER BY make, model",
         dealers,
@@ -90,10 +95,10 @@ def compute_sales(
     cond_filter = ""
     cond_params: list = []
     if condition != "Both":
-        cond_filter = "AND LOWER(s1.condition) LIKE ?"
+        cond_filter = "AND LOWER(s1.condition) LIKE %s"
         cond_params = [f"%{condition.lower()}%"]
 
-    dealer_placeholders = ",".join("?" * len(dealers))
+    dealer_placeholders = ",".join(["%s"] * len(dealers))
 
     sql = f"""
         SELECT
@@ -105,15 +110,8 @@ def compute_sales(
             s1.condition,
             s1.price
         FROM snapshots s1
-        -- Find consecutive date pairs within our window
-        JOIN (
-            SELECT DISTINCT date FROM snapshots
-            WHERE dealer IN ({dealer_placeholders})
-              AND date BETWEEN ? AND ?
-            ORDER BY date
-        ) d ON s1.date = d.date
         WHERE s1.dealer IN ({dealer_placeholders})
-          AND s1.date BETWEEN ? AND ?
+          AND s1.date BETWEEN %s AND %s
           {cond_filter}
           AND NOT EXISTS (
               SELECT 1 FROM snapshots s2
@@ -125,7 +123,7 @@ def compute_sales(
                 )
           )
     """
-    params = list(dealers) + [start, end] + list(dealers) + [start, end] + cond_params
+    params = list(dealers) + [start, end] + cond_params
     return query(sql, params)
 
 
@@ -139,15 +137,15 @@ def compute_inventory_over_time(
     cond_filter = ""
     cond_params: list = []
     if condition != "Both":
-        cond_filter = "AND LOWER(condition) LIKE ?"
+        cond_filter = "AND LOWER(condition) LIKE %s"
         cond_params = [f"%{condition.lower()}%"]
 
-    dealer_placeholders = ",".join("?" * len(dealers))
+    dealer_placeholders = ",".join(["%s"] * len(dealers))
     sql = f"""
         SELECT date, dealer, COUNT(*) as inventory
         FROM snapshots
         WHERE dealer IN ({dealer_placeholders})
-          AND date BETWEEN ? AND ?
+          AND date BETWEEN %s AND %s
           {cond_filter}
         GROUP BY date, dealer
         ORDER BY date, dealer
@@ -167,22 +165,22 @@ def compute_inventory_by_model(
     cond_filter = ""
     cond_params: list = []
     if condition != "Both":
-        cond_filter = "AND LOWER(condition) LIKE ?"
+        cond_filter = "AND LOWER(condition) LIKE %s"
         cond_params = [f"%{condition.lower()}%"]
 
     makes_filter = ""
     makes_params: list = []
     if makes:
-        makes_placeholders = ",".join("?" * len(makes))
+        makes_placeholders = ",".join(["%s"] * len(makes))
         makes_filter = f"AND make IN ({makes_placeholders})"
         makes_params = list(makes)
 
-    dealer_placeholders = ",".join("?" * len(dealers))
+    dealer_placeholders = ",".join(["%s"] * len(dealers))
     sql = f"""
         SELECT date, make, model, COUNT(*) as inventory
         FROM snapshots
         WHERE dealer IN ({dealer_placeholders})
-          AND date BETWEEN ? AND ?
+          AND date BETWEEN %s AND %s
           {cond_filter}
           {makes_filter}
         GROUP BY date, make, model
@@ -219,26 +217,27 @@ def compute_detail_table(
         .reset_index(name="units_sold")
     )
 
-    dealer_placeholders = ",".join("?" * len(dealers))
+    dealer_placeholders = ",".join(["%s"] * len(dealers))
     cond_filter = ""
     cond_params: list = []
     if condition != "Both":
-        cond_filter = "AND LOWER(condition) LIKE ?"
+        cond_filter = "AND LOWER(condition) LIKE %s"
         cond_params = [f"%{condition.lower()}%"]
 
-    # Avg days on lot for sold VINs — MIN(date) for each vin+dealer across all history
+    # Avg days on lot for sold VINs.
+    # PostgreSQL date subtraction returns an integer number of days directly.
     lot_sql = f"""
         SELECT
             s1.dealer, s1.make, s1.model, s1.year,
             AVG(
-                julianday(s1.date) - julianday(
-                    (SELECT MIN(date) FROM snapshots
-                     WHERE vin = s1.vin AND dealer = s1.dealer)
+                s1.date::date - (
+                    SELECT MIN(date)::date FROM snapshots
+                    WHERE vin = s1.vin AND dealer = s1.dealer
                 )
             ) AS avg_days_on_lot
         FROM snapshots s1
         WHERE s1.dealer IN ({dealer_placeholders})
-          AND s1.date BETWEEN ? AND ?
+          AND s1.date BETWEEN %s AND %s
           {cond_filter}
           AND NOT EXISTS (
               SELECT 1 FROM snapshots s2
@@ -296,11 +295,11 @@ def fetch_fred(series_id: str, start: str, end: str) -> pd.DataFrame:
         resp = requests.get(
             FRED_BASE,
             params={
-                "series_id":        series_id,
+                "series_id":         series_id,
                 "observation_start": start,
                 "observation_end":   end,
-                "file_type":        "json",
-                "api_key":          "public_data",  # FRED allows unauthenticated for many series
+                "file_type":         "json",
+                "api_key":           "public_data",
             },
             timeout=10,
         )
@@ -394,6 +393,7 @@ show_fred = st.sidebar.toggle("Show FRED industry benchmark", value=False)
 dealers_tuple = tuple(selected_dealers)
 start_str = start_date.isoformat()
 end_str = end_date.isoformat()
+period_days = max((end_date - start_date).days, 1)
 
 sales_df = compute_sales(dealers_tuple, start_str, end_str, condition_filter)
 inv_df = compute_inventory_over_time(dealers_tuple, start_str, end_str, condition_filter)
@@ -418,7 +418,6 @@ st.caption(
 # Row 1 — KPI cards
 # ---------------------------------------------------------------------------
 
-period_days = max((end_date - start_date).days, 1)
 total_sold = len(sales_df)
 avg_daily = total_sold / period_days
 
@@ -717,7 +716,7 @@ if compare_mode and not detail_df.empty:
     st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# FRED benchmark tab (Phase 8)
+# FRED benchmark expander
 # ---------------------------------------------------------------------------
 
 with st.expander("Industry Benchmarks (FRED)"):
@@ -751,7 +750,7 @@ with st.expander("Industry Benchmarks (FRED)"):
     )
 
 # ---------------------------------------------------------------------------
-# AutoFlyte placeholder tab
+# AutoFlyte placeholder
 # ---------------------------------------------------------------------------
 
 with st.expander("AutoFlyte Integration (coming soon)"):

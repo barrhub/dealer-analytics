@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """
-fetch_inventory.py — Daily FTP inventory fetch + SQLite storage.
+fetch_inventory.py — Daily FTP inventory fetch + PostgreSQL storage.
 
 Usage:
     python fetch_inventory.py                          # fetch live FTP
     python fetch_inventory.py --from-local <dir>       # seed from local backup files
     python fetch_inventory.py --date 2025-01-15        # override snapshot date (for backfill)
+
+Requires:
+    DATABASE_URL environment variable pointing to a PostgreSQL instance.
+    e.g. export DATABASE_URL=postgresql://localhost/dealer_analytics
 """
 
 import argparse
 import ftplib
 import io
 import os
-import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -25,8 +30,6 @@ import pandas as pd
 FTP_HOST = "ftp.santacruzclassics.com"
 FTP_USER = os.environ.get("FTP_USER", "anonymous")
 FTP_PASS = os.environ.get("FTP_PASS", "anonymous@")
-
-DB_PATH = Path(__file__).parent / "inventory.db"
 
 # Dealer name → one or more filenames on the FTP server.
 # When a list is given, rows from all files are combined and deduped by VIN.
@@ -44,50 +47,66 @@ DEALERS = {
 # Database helpers
 # ---------------------------------------------------------------------------
 
-DDL = """
-CREATE TABLE IF NOT EXISTS snapshots (
-    date        TEXT,
-    dealer      TEXT,
-    vin         TEXT,
-    year        INTEGER,
-    make        TEXT,
-    model       TEXT,
-    trim        TEXT,
-    condition   TEXT,
-    price       REAL,
-    PRIMARY KEY (date, vin, dealer)
-);
-
-CREATE TABLE IF NOT EXISTS fetch_log (
-    fetched_at  TEXT,
-    dealer      TEXT,
-    file        TEXT,
-    rows_parsed INTEGER,
-    status      TEXT
-);
-"""
+def get_db_url() -> str:
+    url = os.environ.get("DATABASE_URL", "")
+    # Railway sometimes issues postgres:// URLs; psycopg2 requires postgresql://
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if not url:
+        raise ValueError(
+            "DATABASE_URL environment variable not set.\n"
+            "Example: export DATABASE_URL=postgresql://localhost/dealer_analytics"
+        )
+    return url
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(DDL)
-    conn.commit()
+def get_conn() -> psycopg2.extensions.connection:
+    conn = psycopg2.connect(get_db_url())
+    _init_db(conn)
     return conn
 
 
-def snapshot_exists(conn: sqlite3.Connection, snapshot_date: str, dealer: str) -> bool:
+def _init_db(conn: psycopg2.extensions.connection):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS snapshots (
+                date      TEXT,
+                dealer    TEXT,
+                vin       TEXT,
+                year      INTEGER,
+                make      TEXT,
+                model     TEXT,
+                trim      TEXT,
+                condition TEXT,
+                price     REAL,
+                PRIMARY KEY (date, vin, dealer)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fetch_log (
+                fetched_at  TEXT,
+                dealer      TEXT,
+                file        TEXT,
+                rows_parsed INTEGER,
+                status      TEXT
+            )
+        """)
+    conn.commit()
+
+
+def snapshot_exists(conn: psycopg2.extensions.connection, snapshot_date: str, dealer: str) -> bool:
     """Return True if we already have rows for this date+dealer (idempotency guard)."""
-    row = conn.execute(
-        "SELECT 1 FROM snapshots WHERE date = ? AND dealer = ? LIMIT 1",
-        (snapshot_date, dealer),
-    ).fetchone()
-    return row is not None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM snapshots WHERE date = %s AND dealer = %s LIMIT 1",
+            (snapshot_date, dealer),
+        )
+        return cur.fetchone() is not None
 
 
-def insert_snapshot(conn: sqlite3.Connection, snapshot_date: str, dealer: str, df: pd.DataFrame):
-    rows = []
-    for _, r in df.iterrows():
-        rows.append((
+def insert_snapshot(conn: psycopg2.extensions.connection, snapshot_date: str, dealer: str, df: pd.DataFrame):
+    rows = [
+        (
             snapshot_date,
             dealer,
             r.get("vin", ""),
@@ -97,21 +116,25 @@ def insert_snapshot(conn: sqlite3.Connection, snapshot_date: str, dealer: str, d
             r.get("trim", ""),
             r.get("condition", ""),
             _float(r.get("price")),
-        ))
-    conn.executemany(
-        """INSERT OR IGNORE INTO snapshots
-           (date, dealer, vin, year, make, model, trim, condition, price)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        rows,
-    )
+        )
+        for _, r in df.iterrows()
+    ]
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO snapshots (date, dealer, vin, year, make, model, trim, condition, price)
+               VALUES %s ON CONFLICT DO NOTHING""",
+            rows,
+        )
     conn.commit()
 
 
-def log_fetch(conn: sqlite3.Connection, dealer: str, filename: str, rows: int, status: str):
-    conn.execute(
-        "INSERT INTO fetch_log (fetched_at, dealer, file, rows_parsed, status) VALUES (?,?,?,?,?)",
-        (datetime.utcnow().isoformat(), dealer, filename, rows, status),
-    )
+def log_fetch(conn: psycopg2.extensions.connection, dealer: str, filename: str, rows: int, status: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO fetch_log (fetched_at, dealer, file, rows_parsed, status) VALUES (%s,%s,%s,%s,%s)",
+            (datetime.utcnow().isoformat(), dealer, filename, rows, status),
+        )
     conn.commit()
 
 
@@ -253,6 +276,7 @@ def fetch_from_ftp(snapshot_date: str):
         ftp.set_pasv(True)
     except Exception as e:
         print(f"FTP connection failed: {e}")
+        conn.close()
         return
 
     for dealer, filenames in DEALERS.items():
@@ -301,16 +325,13 @@ def fetch_from_local(local_dir: str, snapshot_date: str):
     base = Path(local_dir)
     conn = get_conn()
 
-    # Collect all candidate paths: flat files + date-named subdirectories
-    candidates: dict[str, list[Path]] = {}  # filename.lower() → path
-
-    def index_dir(d: Path, snap_date: str):
-        """Index all CSV files in directory d for snapshot date snap_date."""
-        date_candidates: dict[str, list[Path]] = {}
+    def index_dir(d: Path) -> dict[str, list[Path]]:
+        """Index all CSV files in directory d by lowercased filename."""
+        result: dict[str, list[Path]] = {}
         for f in d.iterdir():
             if f.is_file() and f.suffix.lower() == ".csv":
-                date_candidates.setdefault(f.name.lower(), []).append(f)
-        return date_candidates, snap_date
+                result.setdefault(f.name.lower(), []).append(f)
+        return result
 
     # Check if base contains date subdirectories
     date_dirs = sorted([
@@ -323,12 +344,11 @@ def fetch_from_local(local_dir: str, snapshot_date: str):
         for date_dir in date_dirs:
             dir_date = date_dir.name  # YYYY-MM-DD
             print(f"\nProcessing date directory: {dir_date}")
-            dir_candidates, _ = index_dir(date_dir, dir_date)
-            _process_local_candidates(conn, dir_candidates, dir_date)
+            _process_local_candidates(conn, index_dir(date_dir), dir_date)
     else:
         # Flat directory — use the provided snapshot_date
-        flat_candidates, _ = index_dir(base, snapshot_date)
-        # Also include any subdirectories that aren't date dirs
+        flat_candidates = index_dir(base)
+        # Also index any non-date subdirectories
         for sub in base.iterdir():
             if sub.is_dir() and not _is_date_dir(sub.name):
                 for f in sub.iterdir():
@@ -348,7 +368,7 @@ def _is_date_dir(name: str) -> bool:
         return False
 
 
-def _process_local_candidates(conn: sqlite3.Connection, candidates: dict, snapshot_date: str):
+def _process_local_candidates(conn: psycopg2.extensions.connection, candidates: dict, snapshot_date: str):
     for dealer, filenames in DEALERS.items():
         if snapshot_exists(conn, snapshot_date, dealer):
             print(f"  [{dealer}] already loaded for {snapshot_date}, skipping")
@@ -406,7 +426,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"Snapshot date: {args.date}")
-    print(f"Database:      {DB_PATH}")
+    print(f"Database:      {os.environ.get('DATABASE_URL', '(DATABASE_URL not set)')}")
 
     if args.from_local:
         print(f"Source:        local directory — {args.from_local}")
