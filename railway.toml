@@ -5,7 +5,6 @@ builder = "nixpacks"
 nixPkgs = ["python312"]
 
 [deploy]
-startCommand = "streamlit run dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
