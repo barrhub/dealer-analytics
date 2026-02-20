@@ -539,7 +539,7 @@ else:
             height=max(400, len(chart_df) * 22),
         )
         fig_bar.update_layout(yaxis={"categoryorder": "total ascending"}, margin={"l": 200})
-        st.plotly_chart(fig_bar, width='stretch')
+        st.plotly_chart(fig_bar, use_container_width=True)
     else:
         # Compare mode: one subplot per dealer
         dealer_cols = st.columns(min(len(selected_dealers), 3))
@@ -559,7 +559,7 @@ else:
                         height=300,
                     )
                     fig_d.update_layout(margin={"l": 150, "t": 10})
-                    st.plotly_chart(fig_d, width='stretch')
+                    st.plotly_chart(fig_d, use_container_width=True)
 
 st.markdown("---")
 
@@ -636,7 +636,7 @@ with col_left:
                     }
                 )
 
-            st.plotly_chart(fig_inv, width='stretch')
+            st.plotly_chart(fig_inv, use_container_width=True)
 
     else:  # Make & Model
         if inv_model_df.empty:
@@ -651,7 +651,7 @@ with col_left:
                 labels={"date": "Date", "inventory": "VINs in Feed", "make_model": "Model"},
                 markers=True,
             )
-            st.plotly_chart(fig_inv, width='stretch')
+            st.plotly_chart(fig_inv, use_container_width=True)
 
 with col_right:
     st.subheader("Sales Rate Over Time")
@@ -701,7 +701,7 @@ with col_right:
                 markers=True,
             )
 
-        st.plotly_chart(fig_sales, width='stretch')
+        st.plotly_chart(fig_sales, use_container_width=True)
 
 st.markdown("---")
 
@@ -735,7 +735,7 @@ else:
 
     st.dataframe(
         detail_display,
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
         column_config={
             "Units Sold":           st.column_config.NumberColumn(format="%d"),
@@ -768,7 +768,7 @@ if compare_mode and not detail_df.empty:
         text_auto=".1f",
     )
     fig_st.update_traces(texttemplate="%{text}%", textposition="outside")
-    st.plotly_chart(fig_st, width='stretch')
+    st.plotly_chart(fig_st, use_container_width=True)
     st.markdown("---")
 
 # ---------------------------------------------------------------------------
@@ -798,7 +798,7 @@ with st.expander("Industry Benchmarks (FRED)"):
                     y="value",
                     labels={"date": "Date", "value": "SAAR (millions)"},
                 )
-                st.plotly_chart(fig_fred, width='stretch')
+                st.plotly_chart(fig_fred, use_container_width=True)
 
     st.caption(
         "FRED data sourced from the St. Louis Federal Reserve (fred.stlouisfed.org). "
