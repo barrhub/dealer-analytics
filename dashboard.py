@@ -18,7 +18,6 @@ import plotly.graph_objects as go
 import psycopg2
 import requests
 import streamlit as st
-from sqlalchemy import create_engine, text
 
 # Load .env file if present (for local development)
 try:
@@ -51,14 +50,15 @@ def get_db_url() -> str:
     return url
 
 
-@st.cache_resource
-def get_engine():
-    return create_engine(get_db_url())
-
-
 def query(sql: str, params=()) -> pd.DataFrame:
-    with get_engine().connect() as conn:
-        return pd.read_sql_query(sql, conn, params=list(params) if params else None)
+    conn = psycopg2.connect(get_db_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, list(params) if params else None)
+            columns = [desc[0] for desc in cur.description]
+            return pd.DataFrame(cur.fetchall(), columns=columns)
+    finally:
+        conn.close()
 
 
 def ensure_tables():
