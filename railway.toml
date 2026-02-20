@@ -5,6 +5,6 @@ builder = "nixpacks"
 nixPkgs = ["python312"]
 
 [deploy]
-healthcheckPath = "/"
+healthcheckPath = "/_stcore/health"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
