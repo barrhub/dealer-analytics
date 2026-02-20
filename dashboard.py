@@ -866,6 +866,40 @@ with st.expander("Upload Historical Data"):
             finally:
                 conn.close()
 
+    st.markdown("---")
+    st.markdown("**Delete a snapshot**")
+    st.caption("Use this to remove a snapshot that was uploaded to the wrong dealer or date.")
+
+    del_dealer = st.selectbox("Dealer", options=list(DEALERS.keys()), key="delete_dealer")
+    del_date = st.date_input(
+        "Snapshot date",
+        value=date.today() - timedelta(days=1),
+        key="delete_date",
+    )
+
+    if st.button("Delete Snapshot", type="primary", key="delete_btn"):
+        date_str = del_date.isoformat()
+        conn = psycopg2.connect(get_db_url())
+        try:
+            if not snapshot_exists(conn, date_str, del_dealer):
+                st.warning(f"No snapshot found for **{del_dealer}** on **{date_str}**.")
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM snapshots WHERE date = %s AND dealer = %s",
+                        (date_str, del_dealer),
+                    )
+                    count = cur.fetchone()[0]
+                    cur.execute(
+                        "DELETE FROM snapshots WHERE date = %s AND dealer = %s",
+                        (date_str, del_dealer),
+                    )
+                conn.commit()
+                st.cache_data.clear()
+                st.success(f"Deleted **{count} VINs** for **{del_dealer}** on **{date_str}**.")
+        finally:
+            conn.close()
+
 # ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
