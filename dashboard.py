@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 import psycopg2
 import requests
 import streamlit as st
+from sqlalchemy import create_engine, text
 
 # Load .env file if present (for local development)
 try:
@@ -51,8 +52,17 @@ def get_db_url() -> str:
 
 
 @st.cache_resource
+def get_engine():
+    return create_engine(get_db_url())
+
+
+def query(sql: str, params=()) -> pd.DataFrame:
+    with get_engine().connect() as conn:
+        return pd.read_sql_query(sql, conn, params=list(params) if params else None)
+
+
 def ensure_tables():
-    """Create tables if they don't exist. Runs once per app session."""
+    """Create tables if they don't exist."""
     conn = psycopg2.connect(get_db_url())
     try:
         with conn.cursor() as cur:
@@ -84,15 +94,9 @@ def ensure_tables():
         conn.close()
 
 
-def query(sql: str, params=()) -> pd.DataFrame:
-    conn = psycopg2.connect(get_db_url())
-    try:
-        return pd.read_sql_query(sql, conn, params=list(params) if params else None)
-    finally:
-        conn.close()
-
-
-ensure_tables()
+if "tables_initialized" not in st.session_state:
+    ensure_tables()
+    st.session_state["tables_initialized"] = True
 
 
 @st.cache_data(ttl=300)
@@ -528,7 +532,7 @@ else:
             height=max(400, len(chart_df) * 22),
         )
         fig_bar.update_layout(yaxis={"categoryorder": "total ascending"}, margin={"l": 200})
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width='stretch')
     else:
         # Compare mode: one subplot per dealer
         dealer_cols = st.columns(min(len(selected_dealers), 3))
@@ -548,7 +552,7 @@ else:
                         height=300,
                     )
                     fig_d.update_layout(margin={"l": 150, "t": 10})
-                    st.plotly_chart(fig_d, use_container_width=True)
+                    st.plotly_chart(fig_d, width='stretch')
 
 st.markdown("---")
 
@@ -625,7 +629,7 @@ with col_left:
                     }
                 )
 
-            st.plotly_chart(fig_inv, use_container_width=True)
+            st.plotly_chart(fig_inv, width='stretch')
 
     else:  # Make & Model
         if inv_model_df.empty:
@@ -640,7 +644,7 @@ with col_left:
                 labels={"date": "Date", "inventory": "VINs in Feed", "make_model": "Model"},
                 markers=True,
             )
-            st.plotly_chart(fig_inv, use_container_width=True)
+            st.plotly_chart(fig_inv, width='stretch')
 
 with col_right:
     st.subheader("Sales Rate Over Time")
@@ -690,7 +694,7 @@ with col_right:
                 markers=True,
             )
 
-        st.plotly_chart(fig_sales, use_container_width=True)
+        st.plotly_chart(fig_sales, width='stretch')
 
 st.markdown("---")
 
@@ -724,7 +728,7 @@ else:
 
     st.dataframe(
         detail_display,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "Units Sold":           st.column_config.NumberColumn(format="%d"),
@@ -757,7 +761,7 @@ if compare_mode and not detail_df.empty:
         text_auto=".1f",
     )
     fig_st.update_traces(texttemplate="%{text}%", textposition="outside")
-    st.plotly_chart(fig_st, use_container_width=True)
+    st.plotly_chart(fig_st, width='stretch')
     st.markdown("---")
 
 # ---------------------------------------------------------------------------
@@ -787,7 +791,7 @@ with st.expander("Industry Benchmarks (FRED)"):
                     y="value",
                     labels={"date": "Date", "value": "SAAR (millions)"},
                 )
-                st.plotly_chart(fig_fred, use_container_width=True)
+                st.plotly_chart(fig_fred, width='stretch')
 
     st.caption(
         "FRED data sourced from the St. Louis Federal Reserve (fred.stlouisfed.org). "
