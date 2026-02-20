@@ -340,9 +340,21 @@ def compute_detail_table(
 
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 FRED_SERIES = {
-    "Total Vehicle Sales (SAAR, millions)": "TOTALSA",
-    "Light Auto Sales (SAAR, millions)":    "LAUTOSA",
+    "Total Vehicle Sales (SAAR)":     "TOTALSA",
+    "Domestic Auto Sales (SAAR)":     "DAUTOSA",
+    "Light Truck Sales (SAAR)":       "LTRUCKSA",
+    "Light Auto Sales (SAAR)":        "LAUTOSA",
+    "Motor Vehicle Retail Sales":     "RRSFS",
+    "New Car Price Index (CPI)":      "CUUR0000SETA01",
+    "Used Car Price Index (CPI)":     "CUUR0000SETA02",
 }
+FRED_DEFAULTS = ["Total Vehicle Sales (SAAR)", "Light Truck Sales (SAAR)"]
+# Series IDs that are CPI index values (not millions)
+FRED_INDEX_IDS = {"CUUR0000SETA01", "CUUR0000SETA02"}
+# Series IDs that are dollar values in millions
+FRED_DOLLAR_IDS = {"RRSFS"}
+# Series suitable for the inventory chart overlay (volume only)
+FRED_OVERLAY_IDS = {"TOTALSA", "DAUTOSA", "LTRUCKSA", "LAUTOSA"}
 
 
 @st.cache_data(ttl=86400)  # cache 24h
@@ -613,6 +625,8 @@ with col_left:
 
             if show_fred:
                 for series_label, series_id in FRED_SERIES.items():
+                    if series_id not in FRED_OVERLAY_IDS:
+                        continue
                     fred_df = fetch_fred(series_id, start_str, end_str)
                     if not fred_df.empty:
                         fred_df["date_str"] = fred_df["date"].dt.strftime("%Y-%m-%d")
@@ -776,33 +790,50 @@ if compare_mode and not detail_df.empty:
 # ---------------------------------------------------------------------------
 
 with st.expander("Industry Benchmarks (FRED)"):
-    fred_cols = st.columns(len(FRED_SERIES))
-    for i, (label, sid) in enumerate(FRED_SERIES.items()):
-        fred_data = fetch_fred(sid, start_str, end_str)
-        with fred_cols[i]:
-            st.markdown(f"**{label}**")
-            if fred_data.empty:
-                st.info("FRED data unavailable (no API key or network issue).")
-            else:
-                latest_val = fred_data["value"].iloc[-1]
-                prior_val = fred_data["value"].iloc[-2] if len(fred_data) > 1 else latest_val
-                delta_pct = (latest_val - prior_val) / max(prior_val, 0.001) * 100
-                st.metric(
-                    label=f"{label} (latest)",
-                    value=f"{latest_val:.2f}M",
-                    delta=f"{delta_pct:+.1f}% vs prior period",
-                )
-                fig_fred = px.line(
-                    fred_data,
-                    x="date",
-                    y="value",
-                    labels={"date": "Date", "value": "SAAR (millions)"},
-                )
-                st.plotly_chart(fig_fred, use_container_width=True)
+    selected_fred = st.multiselect(
+        "Series",
+        options=list(FRED_SERIES.keys()),
+        default=FRED_DEFAULTS,
+    )
+
+    if selected_fred:
+        fred_cols = st.columns(min(len(selected_fred), 2))
+        for i, label in enumerate(selected_fred):
+            sid = FRED_SERIES[label]
+            fred_data = fetch_fred(sid, start_str, end_str)
+            with fred_cols[i % 2]:
+                st.markdown(f"**{label}**")
+                if fred_data.empty:
+                    st.info("FRED data unavailable (no API key or network issue).")
+                else:
+                    latest_val = fred_data["value"].iloc[-1]
+                    prior_val = fred_data["value"].iloc[-2] if len(fred_data) > 1 else latest_val
+                    delta_pct = (latest_val - prior_val) / max(prior_val, 0.001) * 100
+                    if sid in FRED_INDEX_IDS:
+                        display_val = f"{latest_val:.1f}"
+                        y_label = "Index"
+                    elif sid in FRED_DOLLAR_IDS:
+                        display_val = f"${latest_val:,.0f}M"
+                        y_label = "USD (millions)"
+                    else:
+                        display_val = f"{latest_val:.2f}M units"
+                        y_label = "SAAR (millions)"
+                    st.metric(
+                        label=f"{label} (latest)",
+                        value=display_val,
+                        delta=f"{delta_pct:+.1f}% vs prior period",
+                    )
+                    fig_fred = px.line(
+                        fred_data,
+                        x="date",
+                        y="value",
+                        labels={"date": "Date", "value": y_label},
+                    )
+                    st.plotly_chart(fig_fred, use_container_width=True)
 
     st.caption(
         "FRED data sourced from the St. Louis Federal Reserve (fred.stlouisfed.org). "
-        "TOTALSA = Total Vehicle Sales (SAAR). LAUTOSA = Light Auto Sales (SAAR)."
+        "SAAR series in millions of units. RRSFS in millions of USD. CPI indices baseline 1982–84=100."
     )
 
 # ---------------------------------------------------------------------------
