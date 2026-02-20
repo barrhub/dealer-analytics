@@ -355,7 +355,7 @@ def fetch_fred(series_id: str, start: str, end: str) -> pd.DataFrame:
                 "observation_start": start,
                 "observation_end":   end,
                 "file_type":         "json",
-                "api_key":           "public_data",
+                "api_key":           os.environ.get("FRED_API_KEY", ""),
             },
             timeout=10,
         )
