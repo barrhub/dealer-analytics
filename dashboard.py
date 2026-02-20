@@ -162,6 +162,11 @@ def compute_sales(
         WHERE s1.dealer IN ({dealer_placeholders})
           AND s1.date BETWEEN %s AND %s
           {cond_filter}
+          -- Only flag as sold if a subsequent snapshot exists for this dealer
+          AND EXISTS (
+              SELECT 1 FROM snapshots
+              WHERE dealer = s1.dealer AND date > s1.date
+          )
           AND NOT EXISTS (
               SELECT 1 FROM snapshots s2
               WHERE s2.vin    = s1.vin
@@ -316,7 +321,7 @@ def compute_detail_table(
     merged = pd.merge(merged, stock, on=["dealer", "make", "model", "year"], how="outer")
     merged["units_sold"] = merged["units_sold"].fillna(0).astype(int)
     merged["current_stock"] = merged["current_stock"].fillna(0).astype(int)
-    merged["avg_days_on_lot"] = merged["avg_days_on_lot"].round(1)
+    merged["avg_days_on_lot"] = pd.to_numeric(merged["avg_days_on_lot"], errors="coerce").round(1)
 
     # Days to sell-through: current_stock ÷ (units_sold / period_days)
     daily_rate = merged["units_sold"] / max(period_days, 1)
