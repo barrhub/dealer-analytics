@@ -42,7 +42,7 @@ FTP_PASS = os.environ.get("FTP_PASS", "anonymous@")
 # When a list is given, rows from all files are combined and deduped by VIN.
 DEALERS = {
     "Artioli Dodge":     ["artioli_dodge.csv.csv"],
-    "Marcotte Ford":     ["marcotte_ford_new.csv", "marcotte_ford.csv"],
+    "Marcotte Ford":     ["marcotte_ford_new.csv"],
     "Columbia Ford/KIA": ["columbiafordkia.csv"],
     "Central Chevrolet": ["central_chevrolet.csv"],
     "Gates GMC":         ["gatesgmc.csv"],
