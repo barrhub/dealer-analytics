@@ -26,6 +26,8 @@ try:
 except ImportError:
     pass
 
+from fetch_inventory import parse_csv_bytes, DEALERS, insert_snapshot, log_fetch, snapshot_exists
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -804,15 +806,65 @@ with st.expander("Industry Benchmarks (FRED)"):
     )
 
 # ---------------------------------------------------------------------------
-# AutoFlyte placeholder
+# Upload Historical Data
 # ---------------------------------------------------------------------------
 
-with st.expander("AutoFlyte Integration (coming soon)"):
-    st.info(
-        "Connect AutoFlyte export — drop CSV here.\n\n"
-        "This tab will display confirmed point-of-sale data from AutoFlyte once integrated."
+with st.expander("Upload Historical Data"):
+    st.markdown(
+        "Manually seed the database with historical CSV exports. "
+        "Select a dealer, pick the snapshot date the file represents, then upload one or more CSV files."
     )
-    st.file_uploader("Drop AutoFlyte export CSV", type=["csv"], disabled=True)
+
+    up_dealer = st.selectbox("Dealer", options=list(DEALERS.keys()), key="upload_dealer")
+    up_date = st.date_input(
+        "Snapshot date",
+        value=date.today() - timedelta(days=1),
+        key="upload_date",
+    )
+    up_files = st.file_uploader(
+        "CSV file(s)",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="upload_files",
+    )
+
+    if st.button("Upload", key="upload_btn"):
+        if not up_files:
+            st.warning("Please select at least one CSV file.")
+        else:
+            date_str = up_date.isoformat()
+            conn = psycopg2.connect(get_db_url())
+            try:
+                if snapshot_exists(conn, date_str, up_dealer):
+                    st.warning(
+                        f"A snapshot for **{up_dealer}** on **{date_str}** already exists — skipping."
+                    )
+                else:
+                    frames: list[pd.DataFrame] = []
+                    all_ok = True
+                    for f in up_files:
+                        try:
+                            df = parse_csv_bytes(f.read(), up_dealer)
+                            frames.append(df)
+                            st.caption(f"Parsed **{f.name}**: {len(df)} VINs")
+                        except Exception as exc:
+                            st.error(f"Failed to parse **{f.name}**: {exc}")
+                            all_ok = False
+
+                    if frames:
+                        merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["vin"])
+                        insert_snapshot(conn, date_str, up_dealer, merged)
+                        for f in up_files:
+                            log_fetch(conn, up_dealer, f.name, len(merged), "ok (manual upload)")
+                        st.cache_data.clear()
+                        st.success(
+                            f"Uploaded **{len(merged)} VINs** for **{up_dealer}** on **{date_str}**. "
+                            "Charts will refresh with the new data."
+                        )
+                    elif all_ok:
+                        st.warning("No valid rows found in the uploaded file(s).")
+            finally:
+                conn.close()
 
 # ---------------------------------------------------------------------------
 # Footer
