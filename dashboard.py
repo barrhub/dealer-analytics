@@ -676,6 +676,15 @@ with col_left:
 
 with col_right:
     st.subheader("Sales Rate Over Time")
+    sales_period = st.radio(
+        "Aggregate by",
+        ["Weekly", "Monthly"],
+        horizontal=True,
+        key="sales_period",
+    )
+    freq = "W" if sales_period == "Weekly" else "ME"
+    freq_label = "Week" if sales_period == "Weekly" else "Month"
+
     if sales_df.empty:
         st.info("No sales detected.")
     else:
@@ -685,14 +694,19 @@ with col_right:
                 .size()
                 .reset_index(name="units_sold")
             )
-            sales_ts["date_sold"] = pd.to_datetime(sales_ts["date_sold"]).dt.date
-            fig_sales = px.line(
+            sales_ts["date_sold"] = pd.to_datetime(sales_ts["date_sold"])
+            sales_ts = (
+                sales_ts.groupby(["dealer", pd.Grouper(key="date_sold", freq=freq)])
+                ["units_sold"].sum()
+                .reset_index()
+            )
+            fig_sales = px.bar(
                 sales_ts,
                 x="date_sold",
                 y="units_sold",
                 color="dealer",
-                labels={"date_sold": "Date", "units_sold": "Units Sold", "dealer": "Dealer"},
-                markers=True,
+                barmode="group",
+                labels={"date_sold": freq_label, "units_sold": "Units Sold", "dealer": "Dealer"},
             )
         else:  # Make & Model
             sales_df_mm = sales_df.copy()
@@ -704,8 +718,12 @@ with col_right:
                 .size()
                 .reset_index(name="units_sold")
             )
-            sales_ts["date_sold"] = pd.to_datetime(sales_ts["date_sold"]).dt.date
-            # Cap at top 15 by total sold
+            sales_ts["date_sold"] = pd.to_datetime(sales_ts["date_sold"])
+            sales_ts = (
+                sales_ts.groupby(["make_model", pd.Grouper(key="date_sold", freq=freq)])
+                ["units_sold"].sum()
+                .reset_index()
+            )
             top_mm_sales = (
                 sales_ts.groupby("make_model")["units_sold"].sum()
                 .nlargest(15).index.tolist()
@@ -713,13 +731,13 @@ with col_right:
             if len(sales_ts["make_model"].unique()) > 15:
                 sales_ts = sales_ts[sales_ts["make_model"].isin(top_mm_sales)]
                 st.caption("Showing top 15 make/models by units sold.")
-            fig_sales = px.line(
+            fig_sales = px.bar(
                 sales_ts,
                 x="date_sold",
                 y="units_sold",
                 color="make_model",
-                labels={"date_sold": "Date", "units_sold": "Units Sold", "make_model": "Model"},
-                markers=True,
+                barmode="group",
+                labels={"date_sold": freq_label, "units_sold": "Units Sold", "make_model": "Model"},
             )
 
         st.plotly_chart(fig_sales, use_container_width=True)
