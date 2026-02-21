@@ -16,6 +16,7 @@ import argparse
 import ftplib
 import io
 import os
+import zoneinfo
 from datetime import date, datetime
 from pathlib import Path
 
@@ -427,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--date",
         metavar="YYYY-MM-DD",
-        default=date.today().isoformat(),
+        default=datetime.now(zoneinfo.ZoneInfo("America/New_York")).date().isoformat(),
         help="Snapshot date override (default: today)",
     )
     args = parser.parse_args()
