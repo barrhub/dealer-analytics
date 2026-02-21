@@ -629,16 +629,15 @@ with col_left:
                         continue
                     fred_df = fetch_fred(series_id, start_str, end_str)
                     if not fred_df.empty:
-                        fred_df["date_str"] = fred_df["date"].dt.strftime("%Y-%m-%d")
                         fig_inv.add_trace(
                             go.Scatter(
-                                x=fred_df["date_str"],
+                                x=fred_df["date"].dt.date,
                                 y=fred_df["value"],
-                                mode="lines",
+                                mode="lines+markers",
                                 name=f"FRED: {series_label}",
-                                line={"dash": "dot", "width": 1},
+                                line={"dash": "dot", "width": 2},
                                 yaxis="y2",
-                                opacity=0.6,
+                                opacity=0.8,
                             )
                         )
                 fig_inv.update_layout(
@@ -647,7 +646,15 @@ with col_left:
                         "overlaying": "y",
                         "side": "right",
                         "showgrid": False,
-                    }
+                    },
+                    legend={
+                        "orientation": "h",
+                        "yanchor": "bottom",
+                        "y": -0.3,
+                        "xanchor": "left",
+                        "x": 0,
+                    },
+                    margin={"r": 60},
                 )
 
             st.plotly_chart(fig_inv, use_container_width=True)
