@@ -28,6 +28,13 @@ except ImportError:
 
 from fetch_inventory import parse_csv_bytes, DEALERS, insert_snapshot, log_fetch, snapshot_exists
 
+# Fixed color map so each dealer has the same color across all charts
+_PLOTLY_COLORS = px.colors.qualitative.Plotly
+DEALER_COLORS = {
+    dealer: _PLOTLY_COLORS[i % len(_PLOTLY_COLORS)]
+    for i, dealer in enumerate(DEALERS.keys())
+}
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -547,6 +554,7 @@ else:
             y="make_model",
             color="dealer",
             orientation="h",
+            color_discrete_map=DEALER_COLORS,
             labels={"units_sold": "Units Sold", "make_model": "Make & Model", "dealer": "Dealer"},
             height=max(400, len(chart_df) * 22),
         )
@@ -619,6 +627,7 @@ with col_left:
                 x="date",
                 y="inventory",
                 color="dealer",
+                color_discrete_map=DEALER_COLORS,
                 labels={"date": "Date", "inventory": "VINs in Feed", "dealer": "Dealer"},
                 markers=True,
             )
@@ -706,6 +715,7 @@ with col_right:
                 y="units_sold",
                 color="dealer",
                 barmode="group",
+                color_discrete_map=DEALER_COLORS,
                 labels={"date_sold": freq_label, "units_sold": "Units Sold", "dealer": "Dealer"},
             )
         else:  # Make & Model
@@ -804,6 +814,7 @@ if compare_mode and not detail_df.empty:
         y="sell_through_pct",
         labels={"dealer": "Dealer", "sell_through_pct": "Sell-Through %"},
         color="dealer",
+        color_discrete_map=DEALER_COLORS,
         text_auto=".1f",
     )
     fig_st.update_traces(texttemplate="%{text}%", textposition="outside")
