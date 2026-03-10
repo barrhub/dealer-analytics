@@ -636,7 +636,7 @@ with col_left:
                 for series_label, series_id in FRED_SERIES.items():
                     if series_id not in FRED_OVERLAY_IDS:
                         continue
-                    fred_df = fetch_fred(series_id, start_str, end_str)
+                    fred_df = fetch_fred(series_id, start_str, date.today().isoformat())
                     if not fred_df.empty:
                         fig_inv.add_trace(
                             go.Scatter(
@@ -836,7 +836,7 @@ with st.expander("Industry Benchmarks (FRED)"):
         fred_cols = st.columns(min(len(selected_fred), 2))
         for i, label in enumerate(selected_fred):
             sid = FRED_SERIES[label]
-            fred_data = fetch_fred(sid, start_str, end_str)
+            fred_data = fetch_fred(sid, start_str, date.today().isoformat())
             with fred_cols[i % 2]:
                 st.markdown(f"**{label}**")
                 if fred_data.empty:
