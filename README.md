@@ -87,7 +87,7 @@ A **sale** = a VIN present in the feed on day D but absent on day D+1 for the sa
 
 > This is an inference from inventory data, not confirmed point-of-sale data.
 > Disappearances may also include transfers, delistings, or feed errors.
-
+<!--
 ## Dealers & file mapping
 
 | Dealer | File(s) | CSV Format |
@@ -99,7 +99,7 @@ A **sale** = a VIN present in the feed on day D but absent on day D+1 for the sa
 | Gates GMC | `gatesgmc.csv` | Google Shopping |
 | Suburban Subaru | `_Suburban Subaru.csv` | Type/Stock |
 | Troiano CDJ | `TroianoCDJ.csv` | Type/Stock |
-
+-->
 ## Railway deployment (when ready)
 
 1. Push to GitHub (add `.env` to `.gitignore`)
