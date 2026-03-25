@@ -91,6 +91,20 @@ def _init_db(conn: psycopg2.extensions.connection):
             )
         """)
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_snapshots (
+                week_start TEXT,
+                dealer     TEXT,
+                vin        TEXT,
+                year       INTEGER,
+                make       TEXT,
+                model      TEXT,
+                trim       TEXT,
+                condition  TEXT,
+                price      REAL,
+                PRIMARY KEY (week_start, vin, dealer)
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS fetch_log (
                 fetched_at  TEXT,
                 dealer      TEXT,
@@ -100,6 +114,82 @@ def _init_db(conn: psycopg2.extensions.connection):
             )
         """)
     conn.commit()
+
+
+def purge_old_snapshots(conn: psycopg2.extensions.connection):
+    """Delete daily snapshots older than 7 days."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            DELETE FROM snapshots
+            WHERE date::date < (CURRENT_DATE - INTERVAL '7 days')
+        """)
+    conn.commit()
+
+
+def weekly_snapshot_exists(conn: psycopg2.extensions.connection, week_start: str, dealer: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM weekly_snapshots WHERE week_start = %s AND dealer = %s LIMIT 1",
+            (week_start, dealer),
+        )
+        return cur.fetchone() is not None
+
+
+def write_weekly_snapshot(conn: psycopg2.extensions.connection, week_start: str, dealer: str):
+    """
+    Copy the most recent daily snapshot for this dealer into weekly_snapshots,
+    keyed by the Monday (week_start) of that week.
+    """
+    if weekly_snapshot_exists(conn, week_start, dealer):
+        print(f"  [{dealer}] weekly snapshot for {week_start} already exists, skipping")
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO weekly_snapshots (week_start, dealer, vin, year, make, model, trim, condition, price)
+            SELECT %s, dealer, vin, year, make, model, trim, condition, price
+            FROM snapshots
+            WHERE dealer = %s
+              AND date = (SELECT MAX(date) FROM snapshots WHERE dealer = %s)
+            ON CONFLICT DO NOTHING
+        """, (week_start, dealer, dealer))
+    conn.commit()
+    print(f"  [{dealer}] wrote weekly snapshot for {week_start}")
+
+
+def backfill_weekly_snapshots(conn: psycopg2.extensions.connection):
+    """
+    One-time backfill: for each ISO week in the daily snapshots table,
+    write one weekly_snapshots entry per dealer using the latest daily
+    snapshot available in that week.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT
+                DATE_TRUNC('week', date::date)::date::text AS week_start,
+                dealer
+            FROM snapshots
+            ORDER BY week_start, dealer
+        """)
+        weeks = cur.fetchall()
+
+    for week_start, dealer in weeks:
+        if weekly_snapshot_exists(conn, week_start, dealer):
+            continue
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO weekly_snapshots (week_start, dealer, vin, year, make, model, trim, condition, price)
+                SELECT %s, dealer, vin, year, make, model, trim, condition, price
+                FROM snapshots
+                WHERE dealer = %s
+                  AND date = (
+                      SELECT MAX(date) FROM snapshots
+                      WHERE dealer = %s
+                        AND DATE_TRUNC('week', date::date)::date::text = %s
+                  )
+                ON CONFLICT DO NOTHING
+            """, (week_start, dealer, dealer, week_start))
+        conn.commit()
+        print(f"  [{dealer}] backfilled weekly snapshot for {week_start}")
 
 
 def snapshot_exists(conn: psycopg2.extensions.connection, snapshot_date: str, dealer: str) -> bool:
@@ -316,6 +406,19 @@ def fetch_from_ftp(snapshot_date: str):
             print(f"  [{dealer}] stored {len(merged)} unique VINs for {snapshot_date}")
 
     ftp.quit()
+
+    # Purge daily snapshots older than 7 days
+    purge_old_snapshots(conn)
+    print("Purged daily snapshots older than 7 days.")
+
+    # On Mondays, write weekly snapshots for all dealers
+    today_dt = datetime.strptime(snapshot_date, "%Y-%m-%d")
+    if today_dt.weekday() == 0:  # 0 = Monday
+        week_start = snapshot_date  # Monday is the week_start
+        print(f"Monday detected — writing weekly snapshots for week of {week_start}")
+        for dealer in DEALERS:
+            write_weekly_snapshot(conn, week_start, dealer)
+
     conn.close()
     print("Done.")
 
@@ -431,14 +534,26 @@ if __name__ == "__main__":
         default=datetime.now(zoneinfo.ZoneInfo("America/New_York")).date().isoformat(),
         help="Snapshot date override (default: today)",
     )
+    parser.add_argument(
+        "--backfill-weekly",
+        action="store_true",
+        help="Backfill weekly_snapshots from all existing daily snapshots, then exit",
+    )
     args = parser.parse_args()
 
-    print(f"Snapshot date: {args.date}")
-    print(f"Database:      {os.environ.get('DATABASE_URL', '(DATABASE_URL not set)')}")
+    print(f"Database: {os.environ.get('DATABASE_URL', '(DATABASE_URL not set)')}")
 
-    if args.from_local:
+    if args.backfill_weekly:
+        print("Backfilling weekly_snapshots from existing daily data...")
+        conn = get_conn()
+        backfill_weekly_snapshots(conn)
+        conn.close()
+        print("Backfill complete.")
+    elif args.from_local:
+        print(f"Snapshot date: {args.date}")
         print(f"Source:        local directory — {args.from_local}")
         fetch_from_local(args.from_local, args.date)
     else:
+        print(f"Snapshot date: {args.date}")
         print(f"Source:        FTP — {FTP_HOST}")
         fetch_from_ftp(args.date)

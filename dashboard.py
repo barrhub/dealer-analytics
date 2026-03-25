@@ -99,6 +99,20 @@ def ensure_tables():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS weekly_snapshots (
+                    week_start TEXT,
+                    dealer     TEXT,
+                    vin        TEXT,
+                    year       INTEGER,
+                    make       TEXT,
+                    model      TEXT,
+                    trim       TEXT,
+                    condition  TEXT,
+                    price      REAL,
+                    PRIMARY KEY (week_start, vin, dealer)
+                )
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS page_views (
                     viewed_at  TEXT,
                     ip         TEXT
@@ -133,16 +147,16 @@ if "ip_logged" not in st.session_state:
 
 @st.cache_data(ttl=300)
 def get_all_dealers() -> list[str]:
-    df = query("SELECT DISTINCT dealer FROM snapshots ORDER BY dealer")
+    df = query("SELECT DISTINCT dealer FROM weekly_snapshots ORDER BY dealer")
     return df["dealer"].tolist()
 
 
 @st.cache_data(ttl=300)
 def get_date_range() -> tuple[date, date]:
-    df = query("SELECT MIN(date) as min_d, MAX(date) as max_d FROM snapshots")
+    df = query("SELECT MIN(week_start) as min_d, MAX(week_start) as max_d FROM weekly_snapshots")
     if df.empty or df["min_d"][0] is None:
         today = date.today()
-        return today - timedelta(days=30), today
+        return today - timedelta(days=90), today
     return (
         date.fromisoformat(df["min_d"][0]),
         date.fromisoformat(df["max_d"][0]),
@@ -153,7 +167,7 @@ def get_date_range() -> tuple[date, date]:
 def get_makes_models(dealers: tuple) -> pd.DataFrame:
     placeholders = ",".join(["%s"] * len(dealers))
     return query(
-        f"SELECT DISTINCT make, model FROM snapshots WHERE dealer IN ({placeholders}) ORDER BY make, model",
+        f"SELECT DISTINCT make, model FROM weekly_snapshots WHERE dealer IN ({placeholders}) ORDER BY make, model",
         dealers,
     )
 
@@ -170,7 +184,7 @@ def compute_sales(
     condition: str,
 ) -> pd.DataFrame:
     """
-    A sale = VIN present on date D but absent on date D+1 for the same dealer.
+    A sale = VIN present on week W but absent on week W+1 for the same dealer.
     Returns a DataFrame with columns: date_sold, dealer, make, model, year, condition, price.
     """
     cond_filter = ""
@@ -183,29 +197,28 @@ def compute_sales(
 
     sql = f"""
         SELECT
-            s1.date   AS date_sold,
+            s1.week_start AS date_sold,
             s1.dealer,
             s1.make,
             s1.model,
             s1.year,
             s1.condition,
             s1.price
-        FROM snapshots s1
+        FROM weekly_snapshots s1
         WHERE s1.dealer IN ({dealer_placeholders})
-          AND s1.date BETWEEN %s AND %s
+          AND s1.week_start BETWEEN %s AND %s
           {cond_filter}
-          -- Only flag as sold if a subsequent snapshot exists for this dealer
           AND EXISTS (
-              SELECT 1 FROM snapshots
-              WHERE dealer = s1.dealer AND date > s1.date
+              SELECT 1 FROM weekly_snapshots
+              WHERE dealer = s1.dealer AND week_start > s1.week_start
           )
           AND NOT EXISTS (
-              SELECT 1 FROM snapshots s2
-              WHERE s2.vin    = s1.vin
-                AND s2.dealer = s1.dealer
-                AND s2.date   = (
-                    SELECT MIN(date) FROM snapshots
-                    WHERE dealer = s1.dealer AND date > s1.date
+              SELECT 1 FROM weekly_snapshots s2
+              WHERE s2.vin       = s1.vin
+                AND s2.dealer   = s1.dealer
+                AND s2.week_start = (
+                    SELECT MIN(week_start) FROM weekly_snapshots
+                    WHERE dealer = s1.dealer AND week_start > s1.week_start
                 )
           )
     """
@@ -228,13 +241,13 @@ def compute_inventory_over_time(
 
     dealer_placeholders = ",".join(["%s"] * len(dealers))
     sql = f"""
-        SELECT date, dealer, COUNT(*) as inventory
-        FROM snapshots
+        SELECT week_start AS date, dealer, COUNT(*) as inventory
+        FROM weekly_snapshots
         WHERE dealer IN ({dealer_placeholders})
-          AND date BETWEEN %s AND %s
+          AND week_start BETWEEN %s AND %s
           {cond_filter}
-        GROUP BY date, dealer
-        ORDER BY date, dealer
+        GROUP BY week_start, dealer
+        ORDER BY week_start, dealer
     """
     return query(sql, list(dealers) + [start, end] + cond_params)
 
@@ -247,7 +260,7 @@ def compute_inventory_by_model(
     condition: str,
     makes: tuple,
 ) -> pd.DataFrame:
-    """Inventory count per date grouped by make+model (across selected dealers)."""
+    """Inventory count per week grouped by make+model (across selected dealers)."""
     cond_filter = ""
     cond_params: list = []
     if condition != "Both":
@@ -263,14 +276,14 @@ def compute_inventory_by_model(
 
     dealer_placeholders = ",".join(["%s"] * len(dealers))
     sql = f"""
-        SELECT date, make, model, COUNT(*) as inventory
-        FROM snapshots
+        SELECT week_start AS date, make, model, COUNT(*) as inventory
+        FROM weekly_snapshots
         WHERE dealer IN ({dealer_placeholders})
-          AND date BETWEEN %s AND %s
+          AND week_start BETWEEN %s AND %s
           {cond_filter}
           {makes_filter}
-        GROUP BY date, make, model
-        ORDER BY date, make, model
+        GROUP BY week_start, make, model
+        ORDER BY week_start, make, model
     """
     return query(sql, list(dealers) + [start, end] + cond_params + makes_params)
 
@@ -281,20 +294,20 @@ def compute_detail_table(
     start: str,
     end: str,
     condition: str,
-    period_days: int = 30,
+    period_weeks: int = 4,
 ) -> pd.DataFrame:
     """
     Per dealer/make/model/year:
     - units_sold in window
-    - avg_days_on_lot  (first seen → sold, for sold VINs)
-    - current_stock    (most recent snapshot)
-    - days_to_sellthrough  (current_stock / daily_rate)
+    - avg_weeks_on_lot  (first seen → sold, for sold VINs)
+    - current_stock     (most recent weekly snapshot)
+    - weeks_to_sellthrough  (current_stock / weekly_rate)
     """
     sales = compute_sales(dealers, start, end, condition)
     if sales.empty:
         return pd.DataFrame(columns=[
             "dealer", "make", "model", "year",
-            "units_sold", "avg_days_on_lot", "current_stock", "days_to_sellthrough",
+            "units_sold", "avg_weeks_on_lot", "current_stock", "weeks_to_sellthrough",
         ])
 
     sold_agg = (
@@ -310,40 +323,37 @@ def compute_detail_table(
         cond_filter = "AND LOWER(condition) LIKE %s"
         cond_params = [f"%{condition.lower()}%"]
 
-    # Avg days on lot for sold VINs.
-    # PostgreSQL date subtraction returns an integer number of days directly.
     lot_sql = f"""
         SELECT
             s1.dealer, s1.make, s1.model, s1.year,
             AVG(
-                s1.date::date - (
-                    SELECT MIN(date)::date FROM snapshots
+                (s1.week_start::date - (
+                    SELECT MIN(week_start)::date FROM weekly_snapshots
                     WHERE vin = s1.vin AND dealer = s1.dealer
-                )
-            ) AS avg_days_on_lot
-        FROM snapshots s1
+                )) / 7.0
+            ) AS avg_weeks_on_lot
+        FROM weekly_snapshots s1
         WHERE s1.dealer IN ({dealer_placeholders})
-          AND s1.date BETWEEN %s AND %s
+          AND s1.week_start BETWEEN %s AND %s
           {cond_filter}
           AND NOT EXISTS (
-              SELECT 1 FROM snapshots s2
-              WHERE s2.vin    = s1.vin
-                AND s2.dealer = s1.dealer
-                AND s2.date   = (
-                    SELECT MIN(date) FROM snapshots
-                    WHERE dealer = s1.dealer AND date > s1.date
+              SELECT 1 FROM weekly_snapshots s2
+              WHERE s2.vin        = s1.vin
+                AND s2.dealer    = s1.dealer
+                AND s2.week_start = (
+                    SELECT MIN(week_start) FROM weekly_snapshots
+                    WHERE dealer = s1.dealer AND week_start > s1.week_start
                 )
           )
         GROUP BY s1.dealer, s1.make, s1.model, s1.year
     """
     lot = query(lot_sql, list(dealers) + [start, end] + cond_params)
 
-    # Current stock from the latest available date
     stock_sql = f"""
         SELECT dealer, make, model, year, COUNT(*) as current_stock
-        FROM snapshots
+        FROM weekly_snapshots
         WHERE dealer IN ({dealer_placeholders})
-          AND date = (SELECT MAX(date) FROM snapshots WHERE dealer IN ({dealer_placeholders}))
+          AND week_start = (SELECT MAX(week_start) FROM weekly_snapshots WHERE dealer IN ({dealer_placeholders}))
           {cond_filter}
         GROUP BY dealer, make, model, year
     """
@@ -353,15 +363,35 @@ def compute_detail_table(
     merged = pd.merge(merged, stock, on=["dealer", "make", "model", "year"], how="outer")
     merged["units_sold"] = merged["units_sold"].fillna(0).astype(int)
     merged["current_stock"] = merged["current_stock"].fillna(0).astype(int)
-    merged["avg_days_on_lot"] = pd.to_numeric(merged["avg_days_on_lot"], errors="coerce").round(1)
+    merged["avg_weeks_on_lot"] = pd.to_numeric(merged["avg_weeks_on_lot"], errors="coerce").round(1)
 
-    # Days to sell-through: current_stock ÷ (units_sold / period_days)
-    daily_rate = merged["units_sold"] / max(period_days, 1)
-    merged["days_to_sellthrough"] = (
-        merged["current_stock"] / daily_rate.replace(0, float("nan"))
+    weekly_rate = merged["units_sold"] / max(period_weeks, 1)
+    merged["weeks_to_sellthrough"] = (
+        merged["current_stock"] / weekly_rate.replace(0, float("nan"))
     ).round(0)
 
     return merged.sort_values("units_sold", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=300)
+def compute_recent_inventory(dealers: tuple, condition: str) -> pd.DataFrame:
+    """Last 7 days of daily snapshots for the 'Last 7 Days' view."""
+    cond_filter = ""
+    cond_params: list = []
+    if condition != "Both":
+        cond_filter = "AND LOWER(condition) LIKE %s"
+        cond_params = [f"%{condition.lower()}%"]
+
+    dealer_placeholders = ",".join(["%s"] * len(dealers))
+    sql = f"""
+        SELECT date, dealer, COUNT(*) as inventory
+        FROM snapshots
+        WHERE dealer IN ({dealer_placeholders})
+          {cond_filter}
+        GROUP BY date, dealer
+        ORDER BY date, dealer
+    """
+    return query(sql, list(dealers) + cond_params)
 
 
 # ---------------------------------------------------------------------------
@@ -491,11 +521,11 @@ show_fred = st.sidebar.toggle("Show FRED industry benchmark", value=False)
 dealers_tuple = tuple(selected_dealers)
 start_str = start_date.isoformat()
 end_str = end_date.isoformat()
-period_days = max((end_date - start_date).days, 1)
+period_weeks = max((end_date - start_date).days // 7, 1)
 
 sales_df = compute_sales(dealers_tuple, start_str, end_str, condition_filter)
 inv_df = compute_inventory_over_time(dealers_tuple, start_str, end_str, condition_filter)
-detail_df = compute_detail_table(dealers_tuple, start_str, end_str, condition_filter, period_days)
+detail_df = compute_detail_table(dealers_tuple, start_str, end_str, condition_filter, period_weeks)
 
 # Apply make filter post-query (cheaper than re-querying)
 if selected_makes:
@@ -517,7 +547,7 @@ st.caption(
 # ---------------------------------------------------------------------------
 
 total_sold = len(sales_df)
-avg_daily = total_sold / period_days
+avg_weekly = total_sold / period_weeks
 
 # Largest current inventory
 if not inv_df.empty:
@@ -541,7 +571,7 @@ else:
 
 col1, col2, col3, col4 = st.columns(4)
 kpi_card(col1, "Total Sold (period)", f"{total_sold:,}")
-kpi_card(col2, "Avg Daily Sales", f"{avg_daily:.1f}")
+kpi_card(col2, "Avg Weekly Sales", f"{avg_weekly:.1f}")
 kpi_card(col3, "Largest Inventory", largest_inv_label)
 kpi_card(col4, "Fastest Mover", fastest_label)
 
@@ -794,15 +824,15 @@ else:
     )
     detail_display["year"] = detail_display["year"].fillna(0).astype(int)
     detail_display = detail_display.rename(columns={
-        "dealer":              "Dealer",
-        "make":                "Make",
-        "model":               "Model",
-        "year":                "Year",
-        "units_sold":          "Units Sold",
-        "avg_days_on_lot":     "Avg Days on Lot",
-        "current_stock":       "Current Stock",
-        "days_to_sellthrough": "Days to Sell-Through",
-        "sell_through_pct":    "Sell-Through %",
+        "dealer":               "Dealer",
+        "make":                 "Make",
+        "model":                "Model",
+        "year":                 "Year",
+        "units_sold":           "Units Sold",
+        "avg_weeks_on_lot":     "Avg Weeks on Lot",
+        "current_stock":        "Current Stock",
+        "weeks_to_sellthrough": "Weeks to Sell-Through",
+        "sell_through_pct":     "Sell-Through %",
     })
 
     st.dataframe(
@@ -810,11 +840,11 @@ else:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Units Sold":           st.column_config.NumberColumn(format="%d"),
-            "Avg Days on Lot":      st.column_config.NumberColumn(format="%.1f days", help="Average days a sold vehicle sat in the feed before disappearing"),
-            "Current Stock":        st.column_config.NumberColumn(format="%d"),
-            "Days to Sell-Through": st.column_config.NumberColumn(format="%.0f days", help="At the current sales pace, how many days until current stock is gone"),
-            "Sell-Through %":       st.column_config.NumberColumn(format="%.1f%%", help="Units sold ÷ (units sold + current stock) — what fraction of total exposure has converted to a sale"),
+            "Units Sold":            st.column_config.NumberColumn(format="%d"),
+            "Avg Weeks on Lot":      st.column_config.NumberColumn(format="%.1f wks", help="Average weeks a sold vehicle sat in the feed before disappearing"),
+            "Current Stock":         st.column_config.NumberColumn(format="%d"),
+            "Weeks to Sell-Through": st.column_config.NumberColumn(format="%.0f wks", help="At the current sales pace, how many weeks until current stock is gone"),
+            "Sell-Through %":        st.column_config.NumberColumn(format="%.1f%%", help="Units sold ÷ (units sold + current stock) — what fraction of total exposure has converted to a sale"),
         },
     )
 
@@ -827,9 +857,9 @@ st.markdown("---")
 if compare_mode and not detail_df.empty:
     st.subheader("Sell-Through % by Dealer")
     st_by_dealer = (
-        detail_df.groupby("dealer")
-        .apply(lambda g: g["units_sold"].sum() / max((g["units_sold"].sum() + g["current_stock"].sum()), 1) * 100)
-        .reset_index(name="sell_through_pct")
+        detail_df.groupby("dealer", group_keys=False)
+        .apply(lambda g: pd.Series({"sell_through_pct": g["units_sold"].sum() / max((g["units_sold"].sum() + g["current_stock"].sum()), 1) * 100}))
+        .reset_index()
     )
     fig_st = px.bar(
         st_by_dealer.sort_values("sell_through_pct", ascending=False),
@@ -989,6 +1019,28 @@ with st.expander("Upload Historical Data"):
                 st.success(f"Deleted **{count} VINs** for **{del_dealer}** on **{date_str}**.")
         finally:
             conn.close()
+
+# ---------------------------------------------------------------------------
+# Last 7 Days (daily snapshots)
+# ---------------------------------------------------------------------------
+
+with st.expander("Last 7 Days (Daily View)"):
+    recent_df = compute_recent_inventory(dealers_tuple, condition_filter)
+    if recent_df.empty:
+        st.info("No daily snapshot data available.")
+    else:
+        recent_df["date"] = pd.to_datetime(recent_df["date"]).dt.date
+        fig_recent = px.line(
+            recent_df,
+            x="date",
+            y="inventory",
+            color="dealer",
+            color_discrete_map=DEALER_COLORS,
+            labels={"date": "Date", "inventory": "VINs in Feed", "dealer": "Dealer"},
+            markers=True,
+            title="Inventory — Last 7 Days",
+        )
+        st.plotly_chart(fig_recent, use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # Footer
