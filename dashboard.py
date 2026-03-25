@@ -9,7 +9,7 @@ Requires:
 """
 
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -98,6 +98,12 @@ def ensure_tables():
                     status      TEXT
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS page_views (
+                    viewed_at  TEXT,
+                    ip         TEXT
+                )
+            """)
         conn.commit()
     finally:
         conn.close()
@@ -106,6 +112,23 @@ def ensure_tables():
 if "tables_initialized" not in st.session_state:
     ensure_tables()
     st.session_state["tables_initialized"] = True
+
+if "ip_logged" not in st.session_state:
+    headers = st.context.headers
+    ip = headers.get("X-Forwarded-For", headers.get("Remote-Addr", "unknown"))
+    # X-Forwarded-For can be a comma-separated list; take the first (client) IP
+    ip = ip.split(",")[0].strip()
+    conn = psycopg2.connect(get_db_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO page_views (viewed_at, ip) VALUES (%s, %s)",
+                (datetime.utcnow().isoformat(), ip),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    st.session_state["ip_logged"] = True
 
 
 @st.cache_data(ttl=300)
