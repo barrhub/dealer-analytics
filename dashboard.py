@@ -9,6 +9,7 @@ Requires:
 """
 
 import os
+import ipaddress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -114,10 +115,131 @@ def ensure_tables():
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS page_views (
-                    viewed_at  TEXT,
-                    ip         TEXT
+                    viewed_at   TEXT,
+                    ip          TEXT,
+                    user_agent  TEXT,
+                    ip_city     TEXT,
+                    ip_region   TEXT,
+                    ip_country  TEXT,
+                    ip_country_code TEXT,
+                    ip_org      TEXT,
+                    blocked_reason TEXT
                 )
             """)
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS user_agent TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS ip_city TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS ip_region TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS ip_country TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS ip_country_code TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS ip_org TEXT")
+            cur.execute("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS blocked_reason TEXT")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_public_ip(ip: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not (
+        parsed.is_private
+        or parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    )
+
+
+def lookup_ip_location(ip: str) -> dict[str, str]:
+    """Best-effort public IP lookup. Returns empty strings if unavailable."""
+    empty = {
+        "ip_city": "",
+        "ip_region": "",
+        "ip_country": "",
+        "ip_country_code": "",
+        "ip_org": "",
+    }
+    if not is_public_ip(ip):
+        return empty
+
+    try:
+        resp = requests.get(f"https://ipapi.co/{ip}/json/", timeout=2.5)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return empty
+
+    return {
+        "ip_city": str(data.get("city") or ""),
+        "ip_region": str(data.get("region") or ""),
+        "ip_country": str(data.get("country_name") or ""),
+        "ip_country_code": str(data.get("country_code") or "").upper(),
+        "ip_org": str(data.get("org") or ""),
+    }
+
+
+def parse_csv_env(name: str) -> set[str]:
+    return {
+        item.strip().upper()
+        for item in os.environ.get(name, "").split(",")
+        if item.strip()
+    }
+
+
+def blocked_reason_for_location(location: dict[str, str]) -> str:
+    allowed_country_codes = parse_csv_env("ALLOWED_COUNTRY_CODES")
+    blocked_country_codes = parse_csv_env("BLOCKED_COUNTRY_CODES")
+    blocked_regions = parse_csv_env("BLOCKED_REGIONS")
+    block_unknown = os.environ.get("BLOCK_UNKNOWN_LOCATIONS", "").lower() in {"1", "true", "yes"}
+
+    country_code = location["ip_country_code"].upper()
+    region = location["ip_region"].upper()
+
+    if not country_code and block_unknown:
+        return "unknown location"
+    if country_code and allowed_country_codes and country_code not in allowed_country_codes:
+        return f"country not allowed: {country_code}"
+    if country_code and country_code in blocked_country_codes:
+        return f"country blocked: {country_code}"
+    if region and region in blocked_regions:
+        return f"region blocked: {location['ip_region']}"
+    return ""
+
+
+def log_page_view(ip: str, user_agent: str, location: dict[str, str], blocked_reason: str):
+    conn = psycopg2.connect(get_db_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO page_views (
+                    viewed_at,
+                    ip,
+                    user_agent,
+                    ip_city,
+                    ip_region,
+                    ip_country,
+                    ip_country_code,
+                    ip_org,
+                    blocked_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    datetime.utcnow().isoformat(),
+                    ip,
+                    user_agent,
+                    location["ip_city"],
+                    location["ip_region"],
+                    location["ip_country"],
+                    location["ip_country_code"],
+                    location["ip_org"],
+                    blocked_reason,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -132,17 +254,14 @@ if "ip_logged" not in st.session_state:
     ip = headers.get("X-Forwarded-For", headers.get("Remote-Addr", "unknown"))
     # X-Forwarded-For can be a comma-separated list; take the first (client) IP
     ip = ip.split(",")[0].strip()
-    conn = psycopg2.connect(get_db_url())
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO page_views (viewed_at, ip) VALUES (%s, %s)",
-                (datetime.utcnow().isoformat(), ip),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    user_agent = headers.get("User-Agent", "")
+    location = lookup_ip_location(ip)
+    blocked_reason = blocked_reason_for_location(location)
+    log_page_view(ip, user_agent, location, blocked_reason)
     st.session_state["ip_logged"] = True
+    if blocked_reason:
+        st.error("Access unavailable from this location.")
+        st.stop()
 
 
 @st.cache_data(ttl=300)

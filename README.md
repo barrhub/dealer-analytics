@@ -120,6 +120,56 @@ sqlite3 inventory.db "SELECT date, dealer, COUNT(*) FROM snapshots GROUP BY date
 sqlite3 inventory.db "SELECT * FROM fetch_log ORDER BY fetched_at DESC LIMIT 20;"
 ```
 
+**Check visitor usage in Railway Postgres:**
+```sql
+SELECT
+  viewed_at,
+  ip,
+  ip_city,
+  ip_region,
+  ip_country,
+  ip_country_code,
+  ip_org,
+  blocked_reason,
+  user_agent
+FROM page_views
+ORDER BY viewed_at DESC
+LIMIT 100;
+```
+
+```sql
+SELECT
+  LEFT(viewed_at, 10) AS day,
+  COUNT(*) AS visits,
+  COUNT(DISTINCT ip) AS unique_ips
+FROM page_views
+GROUP BY day
+ORDER BY day DESC;
+```
+
+**Optional visitor blocking:**
+
+Set these as Railway service variables, then redeploy:
+
+```bash
+# Only allow US traffic
+ALLOWED_COUNTRY_CODES=US
+
+# Or block specific countries
+BLOCKED_COUNTRY_CODES=CN,RU
+
+# Optional: block named regions returned by the IP lookup, comma-separated
+BLOCKED_REGIONS=California,Ontario
+
+# Optional: also block visitors when location lookup fails
+BLOCK_UNKNOWN_LOCATIONS=true
+```
+
+The app records blocked attempts in `page_views.blocked_reason`. This is an
+app-level block, so the request still reaches Railway. For edge-level blocking,
+put the app behind a WAF such as Cloudflare and create country/region rules
+there.
+
 **CSV format not recognized:**
 The script will print a warning and attempt best-effort column mapping. Check the
 output for `[warn] unrecognized CSV format` and inspect the CSV headers manually.
