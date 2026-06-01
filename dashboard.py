@@ -8,6 +8,7 @@ Requires:
     e.g. export DATABASE_URL=postgresql://localhost/dealer_analytics
 """
 
+import hmac
 import os
 import ipaddress
 from datetime import date, datetime, timedelta
@@ -45,6 +46,56 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide",
 )
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+def require_auth():
+    """
+    Gate the entire app behind the FTP credentials (FTP_USER / FTP_PASS), which
+    are already configured as environment variables. This is a stopgap — swap to
+    a dedicated dashboard credential later so web access isn't tied to the FTP
+    password.
+
+    Fails closed: if FTP_PASS is unset, the dashboard refuses to serve rather
+    than defaulting to open access. Stops the script for any request that isn't
+    authenticated, so no data access, table creation, or visitor logging runs
+    for anonymous visitors.
+    """
+    expected_user = os.environ.get("FTP_USER", "")
+    expected_pass = os.environ.get("FTP_PASS", "")
+    if not expected_pass:
+        st.error(
+            "Dashboard is not configured for access. "
+            "Set FTP_USER / FTP_PASS environment variables to enable it."
+        )
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("🔒 Dealer Inventory Analytics")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+    st.caption("hint: ftp")
+
+    if submitted:
+        # Constant-time comparison to avoid leaking credentials via timing.
+        user_ok = hmac.compare_digest(username, expected_user)
+        pass_ok = hmac.compare_digest(password, expected_pass)
+        if user_ok and pass_ok:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect username or password.")
+
+    st.stop()
+
+
+require_auth()
 
 # ---------------------------------------------------------------------------
 # Database helpers
