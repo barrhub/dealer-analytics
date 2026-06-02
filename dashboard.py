@@ -65,7 +65,7 @@ def require_auth():
     """
     expected_user = os.environ.get("FTP_USER", "")
     expected_pass = os.environ.get("FTP_PASS", "")
-    if not expected_pass:
+    if not expected_user or not expected_pass:
         st.error(
             "Dashboard is not configured for access. "
             "Set FTP_USER / FTP_PASS environment variables to enable it."
@@ -83,6 +83,11 @@ def require_auth():
     st.caption("hint: ftp")
 
     if submitted:
+        # Reject empty submissions outright so a blank input can never match a
+        # misconfigured (empty) expected value.
+        if not username or not password:
+            st.error("Incorrect username or password.")
+            st.stop()
         # Constant-time comparison to avoid leaking credentials via timing.
         user_ok = hmac.compare_digest(username, expected_user)
         pass_ok = hmac.compare_digest(password, expected_pass)
